@@ -1,0 +1,596 @@
+---
+title: "Dementia (OASIS data) - descriptive statistics, longitudinal analysis & modeling"
+author: "Darius Alexandru Cocirta"
+date: "2023-01-10"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Dementia is a term used to describe a range of cognitive and behavioral symptoms that
+can include memory loss, problems with reasoning and communication and change in
+personality, and a reduction in a person's ability to carry out daily activities, such as
+shopping, washing, dressing and cooking. The most common types of dementia are:
+Alzheimer's disease, vascular dementia, mixed dementia, dementia with Lewy bodies and
+frontotemporal dementia. Dementia is a progressive condition, which means that the
+symptoms will gradually get worse. This progression will vary from person to person and
+each will experience dementia in a different way – people may often have some of the
+same general symptoms, but the degree to which these affect each person will vary 
+(Dementia Gateway, Social Care Institute for Excellence). 
+
+## Context
+The Open Access Series of Imaging Studies (OASIS) is a project aimed at making MRI data sets of the brain freely available to the scientific community. By compiling and freely distributing MRI data sets, they hope to facilitate future discoveries in basic and clinical neuroscience. OASIS is made available by the Washington University Alzheimer’s Disease Research Center, Dr. Randy Buckner at the Howard Hughes Medical Institute (HHMI)( at Harvard University, the Neuroinformatics Research Group (NRG) at Washington University School of Medicine, and the Biomedical Informatics Research Network (BIRN).
+
+## About data
+The dataset consists of a longitudinal collection of 150 subjects aged 60 to 96. Each subject was scanned on two or more visits, separated by at least one year for a total of 373 imaging sessions. For each subject, 3 or 4 individual T1-weighted MRI scans obtained in single scan sessions are included. The subjects are all right-handed and include both men and women. 72 of the subjects were characterized as nondemented throughout the study. 64 of the included subjects were characterized as demented at the time of their initial visits and remained so for subsequent scans, including 51 individuals with mild to moderate Alzheimer’s disease. Another 14 subjects were characterized as nondemented at the time of their initial visit and were subsequently characterized as demented at a later visit.
+
+
+## Assessment
+
+- descriptive statistics
+- longitudinal analysis
+- modeling
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library("dplyr")
+library("janitor")
+library("skimr")
+library("here")
+library("tidyverse")
+library("patchwork")
+library("ggthemes")
+library("ggplot2")
+library("psych")
+library("corrplot")
+library("RColorBrewer")
+library("readr")
+library("caret")
+library("randomForest")
+library("pROC")
+```
+
+```{r include=FALSE}
+mydata = read_csv("oasis_longitudinal.csv")
+```
+
+## Data quality assessment & preliminary exploration
+
+```{r echo=FALSE}
+glimpse(mydata)
+```
+
+### Data summary
+
+```{r echo=FALSE}
+skim_without_charts(mydata)
+```
+
+### Visualizing dataset
+```{r echo=FALSE}
+head(mydata)
+```
+
+### Number of subjects
+```{r echo=TRUE}
+n_distinct(mydata$'Subject ID')
+```
+```{r message=FALSE, warning=FALSE, include=FALSE}
+##### DATA TRANSFORMATION
+mydata <- clean_names(mydata) # change columns to lowercase
+
+mydata <- mydata %>% rename("gender" = "m_f") # rename gender column
+
+# new columns for better visualization 
+mydata <- mydata %>% mutate(clinical_dementia_rating =
+                           case_when(cdr == 0 ~ "normal", 
+                                     cdr == 0.5 ~ "very mild dementia",
+                                     cdr == 1 ~ "mild demeentia",
+                                     cdr == 2 ~ "dementia",
+                                     cdr == 3 ~ "severe"))
+
+mydata <- mydata %>% mutate(education =
+                        case_when(educ <= 8 ~ "primary", 
+                                  educ > 8 & educ <= 12 ~ "secondary",
+                                  educ > 12 & educ <= 16 ~ "post-secondary",
+                                  educ > 16 ~ "univ. and postgraduate"))
+
+mydata <- mydata %>% mutate("mental state examination" =
+                              case_when(mmse >= 24 ~ "normal cognition", 
+                                        mmse > 19 & mmse <= 23 ~ "mild cognitive immpairment",
+                                        mmse > 10 & mmse <= 18 ~ "moderate cognitive immpairment",
+                                        mmse <= 9 ~ "severe cognitive immpairment"))
+
+mydata <- mydata %>% mutate("socioeconomic status" =
+                              case_when(ses == 1 ~ "very  high", 
+                                        ses == 2  ~ "high",
+                                        ses == 3  ~ "medium",
+                                        ses == 4 ~ "low",
+                                        ses == 5 ~ "very low"))
+
+#
+mydata <- na.omit(mydata)
+```
+
+```{r include=FALSE}
+converted = filter(mydata, group == "Converted") #
+demented = filter(mydata, group == "Demented")
+nondemented = filter(mydata, group == "Nondemented")
+```
+
+### Correlation between variables
+
+```{r include=FALSE}
+df_corr = select(mydata, c('visit', 'age','educ', 'ses', 'mmse', 'cdr', 'e_tiv', 'n_wbv', 'asf'))
+M <-cor(df_corr)
+```
+
+```{r echo=FALSE}
+corrplot(M, method = 'number')
+cor(select(mydata, c('age','educ', 'mmse', 'cdr', 'e_tiv', 'n_wbv')))
+```
+
+## Descriptive statistics
+
+
+### Gender, education and socioeconomic status
+
+- Gender - Gender
+- Educ - Years of education
+- SES - Socioeconomic status as assessed by the Hollingshead Index of Social Position and classified into categories from 1 (highest status) to 5 (lowest status)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mydata %>% 
+  summarise(mean(educ), median(educ), sd(educ), mean(ses), sd(ses))
+```
+
+Mean years of schooling (MYS), the average number of completed years of education of a population, is a widely used measure of a country's stock of human capital. The global average is 8.7 years.
+
+Males/Females ratio of dataset is 0.69. Global males/females ratio is 0.98.
+
+
+```{r echo=FALSE, warning=FALSE}
+subjects <- mydata[!duplicated(mydata$'subject_id'), ]
+m = ggplot(subjects, aes(gender, fill = gender))+
+  geom_bar()+
+  scale_fill_manual(values = c("darkslategray3", "darkslategray"))+
+  geom_text(stat = "count", aes(label = ..count..), y = 5, col = "white", fontface = "bold")+
+  ggtitle("Gender")+
+  theme(plot.title = element_text(hjust = .5)) + theme_gdocs()
+n = ggplot(subjects, aes(education, fill = education))+
+  geom_bar()+
+  scale_fill_manual(values = c("darkslategray2", "darkslategray3",  "darkslategray4", "darkslategray"))+
+  geom_text(stat = "count", aes(label = ..count..), y = 5, col = "white", fontface = "bold")+
+  ggtitle("Education status")+
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+p = ggplot(subjects, aes(`socioeconomic status`, fill = `socioeconomic status`))+
+  geom_bar()+
+  scale_fill_manual(values = c("darkslategray2", "darkslategray3",  "darkslategray4", "lightseagreen", "darkslategray"))+
+  geom_text(stat = "count", aes(label = ..count..), y = 5, col = "white", fontface = "bold")+
+  ggtitle("Socioeconomic status")+
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+
+m + n/
+  p
+```
+
+
+
+### Age
+
+Dementia is more common in people over the age of 65, but in some cases, it can also affect people in their 30s, 40s, or 50s.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mydata %>% 
+  summarise(mean(age),median(age), sd(age), max(age), min(age))
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mydata %>% group_by(gender) %>% 
+  summarise(mean(age),median(age), sd(age), max(age), min(age))
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mydata %>% group_by(group) %>% 
+  summarise(mean(age),median(age), sd(age), max(age), min(age))
+```
+
+
+Gaussian distribution of age.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+a = ggplot(mydata, aes(age))+
+  geom_histogram(fill = "darkslategray4")+
+  ggtitle("Age distribution")+
+  theme(plot.title = element_text(hjust = .5), size = 1)  + theme_gdocs()
+b = ggplot(mydata, aes(age, fill = gender))+
+  geom_histogram()+
+  facet_wrap(~gender)+
+  scale_fill_manual(values = c("darkslategray4", "darkslategray"))+
+  ggtitle("Distribution of age by sex")+
+  theme(plot.title = element_text(hjust = .5))  + theme_gdocs()
+### aici de bagat mean, median, etc
+#### vezi daca dai culoare la binuri
+### la fel la fiecare...sau de facut summary la inceput si cam atat
+c = ggplot(mydata, aes(age, fill = group))+
+  geom_histogram()+
+  facet_wrap(~group)+
+  scale_fill_manual(values = c("darkslategray3", "darkslategray",  "darkslategray4")) +
+  ggtitle("Distribution of age by group") +
+  theme(plot.title = element_text(hjust = .5)) + theme_gdocs()
+
+a/
+  b/
+  c
+```
+
+
+### Groups: demented, nondemented, converted
+
+72 of the subjects were characterized as nondemented throughout the study. 64 of the included subjects were characterized as demented at the time of their initial visits and remained so for subsequent scans, including 51 individuals with mild to moderate Alzheimer’s disease. Another 14 subjects were characterized as nondemented at the time of their initial visit and were subsequently characterized as demented at a later visit.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+aa = ggplot(subjects, aes(group, fill = group))+
+  geom_bar()+
+  scale_fill_manual(values = c("darkslategray3",  "darkslategray4", "darkslategray"))+
+  geom_text(stat = "count", aes(label = ..count..), y = 5, col = "white", fontface = "bold")+
+  ggtitle("Groups")+
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+bb = ggplot(subjects, aes(clinical_dementia_rating, fill = clinical_dementia_rating))+
+  geom_bar()+
+  scale_fill_manual(values = c("darkslategray2", "darkslategray3",  "darkslategray4", "darkslategray"))+
+  geom_text(stat = "count", aes(label = ..count..), y = 5, col = "white", fontface = "bold")+
+  ggtitle("Clinical dementia rating")+
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+cc = ggplot(subjects, aes(`mental state examination`, fill = `mental state examination`))+
+  geom_bar()+
+  scale_fill_manual(values = c("darkslategray3",  "darkslategray4", "darkslategray"))+
+  geom_text(stat = "count", aes(label = ..count..), y = 5, col = "white", fontface = "bold")+
+  ggtitle("Mental states")+
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+
+aa/
+  bb/
+  cc
+```
+
+### Mini-Mental State Examination (MMSE - test)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mydata %>% 
+  summarise(mean(mmse),median(mmse), sd(mmse), max(mmse), min(mmse))
+```
+
+A Mini-Mental State Examination (MMSE) is a set of 11 questions that doctors and other healthcare professionals commonly use to check for cognitive impairment (problems with thinking, communication, understanding and memory) and is used as part of the process for determining if someone has dementia.
+
+What abilities does the MMSE check?
+The MMSE can be used to assess 6 areas of mental abilities, including:
+
+- orientation to time and place — knowing the date and where you are;
+- attention / concentration;
+- short-term memory (recall);
+- language skills;
+- visuospatial abilities — visual and spatial relationships between objects;
+- ability to understand and follow instructions.
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+x = ggplot(subjects, aes(x = group, y = mmse, fill = group, shape = group)) +  
+  geom_jitter(aes(colour = group), size = 1.5) + scale_colour_manual(values = c("darkslategray4", "darkslategray3", "darkslategray2")) + 
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+y = ggplot(subjects, aes(x=group, y=mmse, fill=group)) +
+  geom_violin(trim=FALSE) + scale_fill_manual(values=c("#008080", "#3b6363", "#8deeee")) + 
+  labs(title = "mmse score") + theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+z = ggplot(subjects, aes(x=group, y=mmse, fill=group)) +
+  geom_boxplot() + scale_fill_manual(values=c("#008080", "#3b6363", "#8deeee")) + 
+  labs(title = "mmse score") + theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+
+x + y/
+  z
+```
+
+### CDR - clinical dementia rating
+
+The CDR is a global rating scale for staging patients diagnosed with dementia. The CDR evaluates cognitive, behavioral, and functional aspects of Alzheimer disease and other dementias. Rather than a mental status examination or inventory, the rater simply makes a judgment on six categories based on all the information available. The scoring system for the CDR is somewhat complicated and heavily dependent on the memory scores, but the CDR has good interrater reliability in staging dementia. This instrument is a widely used scale in both Alzheimer disease centers and dementia research;
+
+Structured interview with both patient and informant;
+
+Performance is rated in six domains: memory, orientation, judgment and problem solving, community activities, home and hobbies, and personal care.
+
+Clinical Dementia Rating scale (CDR):
+
+- 0 = no impairment; 
+- 0.5 = questionable; 
+- 1 = mild;
+- 2 = moderated;
+- 3 = severe dementia.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mydata %>% 
+  summarise(mean(mmse),median(mmse), sd(mmse), max(mmse), min(mmse))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+a1 = ggplot(mydata, aes(x = group, y = cdr, fill = group, shape = group)) +  
+  geom_jitter(aes(colour = group), size = 1.5) + scale_colour_manual(values = c("darkslategray4", "darkslategray3", "darkslategray2")) +
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+a2 = ggplot(subjects, aes(x=group, y=cdr, fill=group)) +
+  geom_violin(trim=FALSE) + scale_fill_manual(values=c("#008080", "#3b6363", "#8deeee")) + 
+  labs(title = "Score of cdr test / group") +
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+a3 = ggplot(mydata, aes(x=as.factor(cdr), y=age, fill=as.factor(cdr))) +
+  geom_boxplot() + scale_fill_manual(values=c("#008080", "#3b6363", "#8deeee", "#8deeee")) + 
+  labs(title = "CDR by age") +
+  theme_gdocs() + theme(axis.text.x = element_text(size = rel(0.01), angle = 0))
+
+a1 + a3/
+  a2
+```
+
+
+### Education and dementia
+
+Based on the data, I have observed that the CDR score is higher on subjects with primary education and also the CDR score is higher than 0 on subjects with a very low socioeconomic status.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+a11 = ggplot(mydata, aes(x = education, y = cdr, fill = education, shape = education)) +  
+  geom_jitter(aes(colour = education), size = 1.5) + scale_colour_manual(values = c("darkslategray4", "darkslategray3", "darkslategray2", "darkslategray"))
+a22 = ggplot(mydata, aes(x = `socioeconomic status`, y = cdr, fill = `socioeconomic status`, shape = `socioeconomic status`)) +  
+  geom_jitter(aes(colour = `socioeconomic status`), size = 1.5) + scale_colour_manual(values = c("darkslategray4", "darkslategray3", "darkslategray2", "darkslategray", "darkslategray"))
+
+filtered = filter(mydata, group != "Converted") # demented/nondemented
+
+a33 = ggplot(filtered, aes(group, educ, fill = group)) +
+  geom_boxplot(col = "black") +
+  ggtitle("Education and Dementia") +
+  scale_fill_manual(values=c("#8deeee", "#3b6363")) +
+  theme(plot.title = element_text(hjust = .5)) + theme_gdocs()
+
+a11 /a22 #if you are poor and have a primary education, you might develop dementia?
+```
+
+
+
+The plot below showed me that people with dementia have fewer years of education as background than healthy people.
+
+Searching for other scientific papers, I have found that over the past decade, studies on dementia have consistently showed that the more time you spend in education, the lower your risk of dementia. For each additional year of education there is an 11% decrease in risk of developing dementia, the studies reports.
+
+However, these studies have been unable to determine whether or not education - which is linked to higher socioeconomic status and healthier lifestyles - protects the brain against dementia.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+## education and dementia
+a33
+```
+
+
+### Estimated total intracranial volume (eTIV)
+
+The ICV measure, sometimes referred to as total intracranial volume (TIV), refers to the estimated volume of the cranial cavity as outlined by the supratentorial dura matter or cerebral contour when dura is not clearly detectable. (Source: *PubMed Central® website.*)
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(mydata, aes(x=group, y=e_tiv, fill=group)) +
+  geom_boxplot() + geom_jitter(color = "red", alpha = .5) +
+  scale_fill_manual(values=c("#008080", "#3b6363", "#8deeee", "#8deeee")) + 
+  labs(title = "eTiv by group") + theme_gdocs()
+```
+
+### nWBV
+
+Normalized whole brain volume (nWBV), reflecting the percentage of the intracranial cavity occupied by brain, was obtained using previously established methods. (Source: *PubMed Central® website.*)
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(mydata, aes(x=group, y=n_wbv, fill=group)) +
+  geom_boxplot() + geom_jitter(color = "red", alpha = .5) +
+  scale_fill_manual(values=c("#008080", "#3b6363", "#8deeee", "#8deeee")) + 
+  labs(title = "nWBV by group") + theme_gdocs()
+```
+
+
+## Longitudinal analysis
+
+In a longitudinal study, researchers repeatedly examine the same individuals to detect any changes that might occur over a period of time. The benefit of a longitudinal study is aiming to detect developments or changes in the characteristics of the target population at both the group and the individual level.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+s1 <- filter(converted, subject_id == "OAS2_0018")
+s2 <- filter(converted, subject_id == "OAS2_0020")
+s3 <- filter(converted, subject_id == "OAS2_0031")
+s4 <- filter(converted, subject_id == "OAS2_0041")
+s5 <- filter(converted, subject_id == "OAS2_0054")
+s6 <- filter(converted, subject_id == "OAS2_0092")
+s7 <- filter(converted, subject_id == "OAS2_0103")
+s8 <- filter(converted, subject_id == "OAS2_0118")
+s9 <- filter(converted, subject_id == "OAS2_0127")
+s10 <- filter(converted, subject_id == "OAS2_0131")
+s11<- filter(converted, subject_id == "OAS2_0133")
+s12 <- filter(converted, subject_id == "OAS2_0144")
+s13 <- filter(converted, subject_id == "OAS2_0145")
+s14 <- filter(converted, subject_id == "OAS2_0176")
+s1p = ggplot(s1, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s2p = ggplot(s2, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s3p = ggplot(s3, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s4p = ggplot(s4, aes(x=visit, y=mmse)) +geom_line(size = 1.7, color = "#8deeee") + geom_point(size = 5, color = "#8deeee") + theme_gdocs()
+s5p = ggplot(s5, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s6p =  ggplot(s6, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s7p = ggplot(s7, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#008080") + geom_point(size = 3, color = "#008080") + theme_gdocs()
+s8p = ggplot(s8, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s9p = ggplot(s9, aes(x=visit, y=mmse)) +geom_line(size = 1.7, color = "#8deeee") + geom_point(size = 5, color = "#8deeee") + theme_gdocs()
+s10p =  ggplot(s10, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s11p = ggplot(s11, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s12p = ggplot(s12, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#008080") + geom_point(size = 3, color = "#008080") + theme_gdocs()
+s13p = ggplot(s13, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#3b6363") + geom_point(size = 3, color = "#3b6363") + theme_gdocs()
+s14p = ggplot(s14, aes(x=visit, y=mmse)) +geom_line(size = 1, color = "#008080") + geom_point(size = 3, color = "#008080") + theme_gdocs()
+
+(s1p + s2p + s3p)/
+ ( s4p + s5p + s6p)/
+  (s7p + s8p +s9p)/
+  (s10p + s11p +s12p)/
+  (s13p + s14p)
+```
+
+- 14 subjects
+- two or more visits, separated by at least one year. max visits - > 5 
+- first visit median age: 78 (7.6 years), 5th visit median age: 86
+- maximum age: 92 (4th visit), minimum age: 65 (1st visit)
+- CDR median of first visit is 0 (subjects started developing dementia after 65 y.o)
+- starting with 73, people start to develop mild to moderate symptoms of dementia
+- attention / concentration and orientation continue to decrease over the visits (mmse test)
+- there is a single subjects who went to 5 visits and also only 2 subjects with 4 visits
+- in 9 out of 14 cases the mmse score decreased over time; in 3 cases, the score was constant during   multiple visits
+- there are two subjects that improved their mmse score over visits (from 29 points to 30
+ and from 27 to 28).
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+converted %>% count(visit)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+converted %>% 
+  summarise(mean(age), median(age), max(age), min(age), sd(age))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+converted %>% 
+  summarise(mean(cdr), median(cdr), max(cdr), min(cdr), sd(cdr), mean(mmse), max(mmse), min(mmse))
+```
+
+#### Grouped by visit
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+conv1 = converted %>% 
+  group_by(visit) %>% 
+  summarise(mean(age), max(age), min(age), median(age), sd(age))
+conv1
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+conv111 = converted %>% 
+  group_by(visit) %>% 
+  summarise(mean(cdr), median(cdr), sd(cdr), max(cdr), min(cdr), mean(mmse), median(mmse), sd(mmse))
+conv111
+```
+
+## Modeling
+
+Supervised machine learning algorithms uncover insights, patterns, and relationships from a labeled training dataset – that is, a dataset that already contains a known value for the target variable for each record. Because you provide the machine learning algorithm with the correct answers for a problem during training, the algorithm is able to “learn” how the rest of the features relate to the target, enabling you to uncover insights and make predictions about future outcomes based on historical data.
+
+For developing a model that predicts if a person is demented or nondemented, I will use a classification algorithm called Support Vector Machine
+
+### Preprocessing
+
+Because there are three target outputs and a limited number of instances to train for developing a model, I have decided to transform any "Converted" to "Demented" if CDR is greater or equal to 0.5 and to "Nondemented" if CDR is less then 0.5. The new dataset (mdata) will only have one target variable with two outputs: "Demented" and "Nondemented".
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+mdata = mydata %>% 
+  select("subject_id", "group", "visit", "gender", "age", "educ", "ses", "mmse", "cdr", "e_tiv", "n_wbv", 
+         "asf")
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mdata %>% count(group)
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+mdata = mdata %>%
+  mutate(group = case_when(
+    cdr == 0 ~ "Nondemented",
+    cdr > 0  ~ "Demented"
+  ))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+mdata %>% count(group)
+```
+
+
+Because the number of women was significantly higher than men, I have chosen to equalize the ratio between them. The number of men is 148, so I have chosen a random sample of 148 females and created a new dataset.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mdata %>% count(gender)
+
+females <- mdata %>% filter(gender == "F")
+males <- mdata %>% filter(gender == 'M')
+
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+f_sample <- sample_n(females, 148) # 148 females samples 
+mdata_eq <- rbind(males, f_sample)
+
+shuffled_data= mdata_eq[sample(1:nrow(mdata_eq)), ]
+mdata_eq <- shuffled_data
+
+mdata_eq %>% count(gender)
+```
+
+### Scalling, centering, splitting training and testing
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+mdata_eq$group<-as.factor(mdata_eq$group)
+mdata_eq$gender<-as.factor(mdata_eq$gender)
+mdata_eq$cdr<-as.factor(mdata_eq$cdr)
+
+factor_variables<-mdata_eq[, sapply(mdata_eq, is.factor)]
+cdr<-factor_variables$cdr
+dum_var<-dummyVars(~., factor_variables[,-3])
+factor_variables<-as.data.frame(predict(dum_var, factor_variables[,-3]))
+factor_variables<-as.data.frame(cbind(factor_variables, cdr))
+
+numeric_variables<-mdata_eq[, sapply(mdata_eq, is.numeric)]
+correlations<-cor(numeric_variables)
+highCorr<-findCorrelation(correlations, cutoff = .75)
+numeric_variables<-numeric_variables[,-highCorr]
+
+numeric_variables$age<-scale(numeric_variables$age)
+numeric_variables$educ<-scale(numeric_variables$educ)
+numeric_variables$mmse<-scale(numeric_variables$mmse)
+numeric_variables$n_wbv<-scale(numeric_variables$n_wbv)
+numeric_variables$asf<-scale(numeric_variables$asf)
+```
+
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+temp<-as.data.frame(cbind(numeric_variables, factor_variables))
+temp<-temp[,c(-1,-8,-9,-10)]
+train_set <- round(0.9 * nrow(temp)) ## 90 % training 10% testing
+indices <- sample(1:nrow(temp), train_set)
+train <- temp[indices,]
+test <- temp[-indices,]
+
+head(train)
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+head(test)
+```
+
+
+### Support vector machine
+
+A support vector machine (SVM) is a supervised machine learning model that uses classification algorithms for two-group classification problems. After giving an SVM model sets of labeled training data for each category, they’re able to categorize new inputs.
+
+Compared to newer algorithms like neural networks, they have two main advantages: higher speed and better performance with a limited number of samples (in the thousands NORMALLY).
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(11) 
+ctrl<-trainControl(method = "cv", number = 12)
+svm.mod<-train(cdr~., data = train, method = "svmRadial", metric = "Accuracy", trControl = ctrl, tuneLength = 15)
+pred1 <- predict(svm.mod, newdata = test[,-9], cost = 100, gamma = 1)
+confusionMatrix(pred1, test$cdr)
+```
